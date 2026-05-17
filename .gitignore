@@ -1,0 +1,19 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs
+*.log
+npm-debug.log*
+
+# Node (in case anyone adds tooling later)
+node_modules/
+dist/
+build/
+
+# Local server artifacts
+/tmp/
