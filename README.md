@@ -2,7 +2,7 @@
 
 > An interactive web app that lets you **type C code** and watch how memory gets allocated step-by-step across the **Text · Data · BSS · Heap · Stack** segments.
 
-🌐 **Live demo:** https://rritu-018.github.io/c-memory-visualizer/
+🌐 **Live demo:** https://rritu-018.github.io/C_Memory_Visualizer/
 
 ![C Memory Visualizer](https://img.shields.io/badge/built%20with-HTML%20%7C%20CSS%20%7C%20JS-1f6feb)
 ![No build step](https://img.shields.io/badge/build-none-brightgreen)
