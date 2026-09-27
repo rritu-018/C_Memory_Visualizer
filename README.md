@@ -70,11 +70,21 @@ You'll see `x` land on the **Stack**, `p` get drawn pointing to it with an arrow
 c-memory-visualizer/
 ├── index.html      # Landing page served at the project root
 ├── visualizer.html # Interactive editor + memory regions
-├── styles.css      # Dark theme, animations, responsive grid
-├── app.js          # C tokenizer → parser → interpreter → renderer
+├── assets/
+│   ├── css/
+│   │   └── styles.css # Shared visualizer theme and responsive layout
+│   └── js/
+│       └── app.js     # C tokenizer → parser → interpreter → renderer
+├── docs/              # Architecture and development notes
+├── server/            # Future API service (documented placeholder)
+├── database/          # Future schema and migrations (documented placeholder)
 ├── README.md
 └── LICENSE
 ```
+
+The HTML entry pages remain at the repository root so GitHub Pages can continue to serve the landing page at the project URL. Browser assets are grouped under `assets/`. The `server/` and `database/` directories document the planned backend boundary; they do not contain a running backend or database yet.
+
+See [the architecture guide](docs/architecture.md) for a suggested path from this static prototype to a multi-user app.
 
 ---
 

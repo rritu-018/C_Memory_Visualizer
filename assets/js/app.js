@@ -1008,9 +1008,15 @@ function refreshEditor() {
 function escapeHtml(s) { return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function highlightC(src) {
   const KW = ['int','char','short','long','float','double','void','struct','return','if','else','while','for','do','break','continue','sizeof','const','static'];
+  const comments = [];
   const out = escapeHtml(src)
-    .replace(/(\/\/[^\n]*)/g, '<span class="com">$1</span>')
-    .replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="com">$1</span>')
+    // Keep comments out of the other regex passes so generated span attributes
+    // and comment text cannot be mistaken for C strings, numbers, or keywords.
+    .replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, comment => {
+      const marker = `\uE000${'\uE001'.repeat(comments.length)}\uE002`;
+      comments.push(comment);
+      return marker;
+    })
     .replace(/("[^"\n]*")/g, '<span class="str">$1</span>')
     .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="num">$1</span>')
     .replace(new RegExp('\\b(' + KW.join('|') + ')\\b', 'g'), '<span class="kw">$1</span>')
@@ -1018,7 +1024,10 @@ function highlightC(src) {
     // Wrap preprocessor lines last so later highlighting regexes cannot parse
     // the quotes in the generated class="pp" attribute as C string literals.
     .replace(/(^|\n)(#[^\n]*)/g, '$1<span class="pp">$2</span>');
-  return out + '\n'; // trailing newline keeps last line in view
+  const restored = out.replace(/\uE000(\uE001*)\uE002/g, (_, index) =>
+    `<span class="com">${comments[index.length]}</span>`
+  );
+  return restored + '\n'; // trailing newline keeps last line in view
 }
 
 codeInput.addEventListener('input', refreshEditor);
