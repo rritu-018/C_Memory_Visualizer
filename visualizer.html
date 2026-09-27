@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>C Memory Visualizer — See Your Code Allocate Memory</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
+          <defs>
+            <linearGradient id="g1" x1="0" x2="1" y1="0" y2="1">
+              <stop offset="0" stop-color="#7afcff"/>
+              <stop offset="1" stop-color="#a78bfa"/>
+            </linearGradient>
+          </defs>
+          <rect x="2" y="3" width="20" height="6" rx="1.5" fill="url(#g1)" opacity=".9"/>
+          <rect x="2" y="10.5" width="20" height="4" rx="1" fill="url(#g1)" opacity=".55"/>
+          <rect x="2" y="15.5" width="20" height="6" rx="1.5" fill="url(#g1)" opacity=".75"/>
+        </svg>
+      </div>
+      <div>
+        <h1>C Memory Visualizer</h1>
+        <p class="tagline">Type C code. Watch the stack, heap, and data segments come alive.</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <label class="sample-label">
+        Sample:
+        <select id="sampleSelect" aria-label="Load sample program">
+          <option value="basic">Basic locals</option>
+          <option value="pointers">Pointers</option>
+          <option value="malloc">malloc / free</option>
+          <option value="array">Arrays</option>
+          <option value="function">Function call (stack frames)</option>
+          <option value="globals">Globals &amp; BSS</option>
+          <option value="struct">Struct on heap</option>
+        </select>
+      </label>
+      <button id="loadSampleBtn" class="btn ghost">Load</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- LEFT: Editor + Controls -->
+    <section class="panel editor-panel">
+      <div class="panel-head">
+        <h2>main.c</h2>
+        <span class="hint">Supported: int, char, float, double, long, arrays, pointers, structs, malloc/calloc/free, functions</span>
+      </div>
+
+      <div class="editor-wrap">
+        <pre class="line-numbers" id="lineNumbers">1</pre>
+        <textarea id="codeInput" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+        <pre class="syntax-overlay" id="syntaxOverlay" aria-hidden="true"></pre>
+      </div>
+
+      <div class="controls">
+        <button id="runBtn" class="btn primary">▶ Run</button>
+        <button id="stepBackBtn" class="btn" title="Step backward">⏮ Back</button>
+        <button id="stepFwdBtn" class="btn" title="Step forward">Step ⏭</button>
+        <button id="playBtn" class="btn">Auto ▷</button>
+        <button id="resetBtn" class="btn ghost">Reset</button>
+        <div class="speed">
+          <label for="speed">Speed</label>
+          <input id="speed" type="range" min="200" max="1500" step="100" value="700" />
+        </div>
+      </div>
+
+      <div class="status-bar">
+        <div>Step: <strong id="stepIdx">0</strong> / <span id="stepTotal">0</span></div>
+        <div id="stepDescription" class="step-desc">Idle. Click <em>Run</em> to begin.</div>
+      </div>
+
+      <div class="console" id="console" aria-live="polite">
+        <div class="console-head">stdout</div>
+        <pre id="consoleOut"></pre>
+      </div>
+    </section>
+
+    <!-- RIGHT: Memory layout -->
+    <section class="panel memory-panel">
+      <div class="memory-head">
+        <h2>Process Memory Layout</h2>
+        <div class="legend">
+          <span><i class="dot text"></i> Text</span>
+          <span><i class="dot data"></i> Data</span>
+          <span><i class="dot bss"></i> BSS</span>
+          <span><i class="dot heap"></i> Heap</span>
+          <span><i class="dot stack"></i> Stack</span>
+        </div>
+      </div>
+
+      <div class="memory-grid">
+        <div class="region region-text" id="region-text">
+          <div class="region-label">
+            <span class="badge text">TEXT</span>
+            <span class="addr">0x0040 0000</span>
+          </div>
+          <div class="region-body" id="textBody">
+            <div class="region-note">Compiled instructions live here (read-only).</div>
+          </div>
+        </div>
+
+        <div class="region region-data" id="region-data">
+          <div class="region-label">
+            <span class="badge data">DATA</span>
+            <span class="addr">0x0060 0000</span>
+            <span class="muted">initialized globals</span>
+          </div>
+          <div class="region-body" id="dataBody"></div>
+        </div>
+
+        <div class="region region-bss" id="region-bss">
+          <div class="region-label">
+            <span class="badge bss">BSS</span>
+            <span class="addr">0x0061 0000</span>
+            <span class="muted">uninitialized globals (= 0)</span>
+          </div>
+          <div class="region-body" id="bssBody"></div>
+        </div>
+
+        <div class="region region-heap" id="region-heap">
+          <div class="region-label">
+            <span class="badge heap">HEAP</span>
+            <span class="addr" id="heapAddr">0x0080 0000 →</span>
+            <span class="muted">grows up · malloc / calloc / free</span>
+          </div>
+          <div class="region-body" id="heapBody">
+            <div class="empty-note">Heap is empty. Call <code>malloc()</code> to allocate.</div>
+          </div>
+        </div>
+
+        <div class="region region-stack" id="region-stack">
+          <div class="region-label">
+            <span class="badge stack">STACK</span>
+            <span class="addr" id="stackAddr">← 0x7fff ffff</span>
+            <span class="muted">grows down · function frames &amp; locals</span>
+          </div>
+          <div class="region-body" id="stackBody">
+            <div class="empty-note">No active frames.</div>
+          </div>
+        </div>
+      </div>
+
+      <svg class="arrow-layer" id="arrowLayer" aria-hidden="true"></svg>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>
+      <strong>How it works:</strong> A simplified C interpreter parses your code, simulates execution, and snapshots
+      memory at each step. Addresses are illustrative (typical x86-64 layout). Not all of C is supported — keep it simple!
+    </p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

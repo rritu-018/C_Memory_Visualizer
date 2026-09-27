@@ -37,7 +37,7 @@ python3 -m http.server 8080
 npx serve .
 ```
 
-Then open <http://localhost:8080>.
+Then open <http://localhost:8080>. The landing page opens first; use **Start visualizing** to open the interactive tool.
 
 ### Use the live version
 
@@ -68,7 +68,8 @@ You'll see `x` land on the **Stack**, `p` get drawn pointing to it with an arrow
 
 ```
 c-memory-visualizer/
-├── index.html      # Layout: editor + memory regions
+├── index.html      # Landing page served at the project root
+├── visualizer.html # Interactive editor + memory regions
 ├── styles.css      # Dark theme, animations, responsive grid
 ├── app.js          # C tokenizer → parser → interpreter → renderer
 ├── README.md
