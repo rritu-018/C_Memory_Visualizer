@@ -97,6 +97,10 @@ select:focus { outline: 2px solid #7afcff66; }
   font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
   font-size: 13.5px; line-height: 1.55;
 }
+.editor-wrap:focus-within {
+  border-color: rgba(201,251,114,.42);
+  box-shadow: 0 0 0 3px rgba(201,251,114,.06), 0 12px 30px rgba(0,0,0,.12);
+}
 .line-numbers {
   position: absolute; left: 0; top: 0; bottom: 0; width: 42px;
   margin: 0; padding: 12px 6px 12px 8px; text-align: right;
@@ -117,6 +121,7 @@ select:focus { outline: 2px solid #7afcff66; }
   background: transparent; border: 0; resize: none; outline: none;
   z-index: 2;
 }
+#codeInput::selection { background: rgba(100,217,255,.28); color: transparent; }
 .syntax-overlay {
   color: #cbd5e1; pointer-events: none; z-index: 1;
 }
@@ -127,6 +132,10 @@ select:focus { outline: 2px solid #7afcff66; }
 .syntax-overlay .com { color: #6b7a90; font-style: italic; }
 .syntax-overlay .pp { color: #f0abfc; }
 .syntax-overlay .fn { color: #93c5fd; }
+.syntax-overlay .char { color: #ffb18f; }
+.syntax-overlay .constant { color: #c9fb72; }
+.syntax-overlay .op { color: #9bb3ca; }
+.syntax-overlay .pp { color: #c9fb72; }
 
 /* ---------- Controls ---------- */
 .controls {

@@ -1007,27 +1007,107 @@ function refreshEditor() {
 }
 function escapeHtml(s) { return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function highlightC(src) {
-  const KW = ['int','char','short','long','float','double','void','struct','return','if','else','while','for','do','break','continue','sizeof','const','static'];
-  const comments = [];
-  const out = escapeHtml(src)
-    // Keep comments out of the other regex passes so generated span attributes
-    // and comment text cannot be mistaken for C strings, numbers, or keywords.
-    .replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, comment => {
-      const marker = `\uE000${'\uE001'.repeat(comments.length)}\uE002`;
-      comments.push(comment);
-      return marker;
-    })
-    .replace(/("[^"\n]*")/g, '<span class="str">$1</span>')
-    .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="num">$1</span>')
-    .replace(new RegExp('\\b(' + KW.join('|') + ')\\b', 'g'), '<span class="kw">$1</span>')
-    .replace(/\b(malloc|calloc|free|printf|sizeof)\b/g, '<span class="fn">$1</span>')
-    // Wrap preprocessor lines last so later highlighting regexes cannot parse
-    // the quotes in the generated class="pp" attribute as C string literals.
-    .replace(/(^|\n)(#[^\n]*)/g, '$1<span class="pp">$2</span>');
-  const restored = out.replace(/\uE000(\uE001*)\uE002/g, (_, index) =>
-    `<span class="com">${comments[index.length]}</span>`
-  );
-  return restored + '\n'; // trailing newline keeps last line in view
+  const keywords = new Set([
+    'auto','break','case','char','const','continue','default','do','double','else','enum',
+    'extern','float','for','goto','if','inline','int','long','register','restrict','return',
+    'short','signed','sizeof','static','struct','switch','typedef','union','unsigned','void',
+    'volatile','while','_Bool','_Complex','_Imaginary'
+  ]);
+  const builtins = new Set(['printf','scanf','fprintf','sprintf','snprintf','puts','putchar',
+    'getchar','malloc','calloc','realloc','free','sizeof']);
+  const types = new Set(['void','char','short','int','long','float','double','signed',
+    'unsigned','_Bool','size_t','ssize_t','FILE','bool','NULL','true','false']);
+  const numberPattern = /^(?:0[xX][\da-fA-F]+(?:[uUlL]+)?|0[bB][01]+(?:[uUlL]+)?|\d+(?:\.\d*)?(?:[eE][+-]?\d+)?[fFlLuU]*)/;
+  const identifierPattern = /^[A-Za-z_][A-Za-z0-9_]*/;
+  let html = '';
+  let i = 0;
+
+  const span = (kind, text) => `<span class="${kind}">${escapeHtml(text)}</span>`;
+  const isLineStart = index => src.slice(src.lastIndexOf('\n', index - 1) + 1, index).trim() === '';
+
+  while (i < src.length) {
+    const rest = src.slice(i);
+    const char = src[i];
+
+    if (/\s/.test(char)) {
+      html += escapeHtml(char);
+      i++;
+      continue;
+    }
+
+    if (char === '#' && isLineStart(i)) {
+      const end = src.indexOf('\n', i);
+      const directive = end < 0 ? src.slice(i) : src.slice(i, end);
+      html += span('pp', directive);
+      i += directive.length;
+      continue;
+    }
+
+    if (rest.startsWith('//')) {
+      const end = src.indexOf('\n', i);
+      const comment = end < 0 ? src.slice(i) : src.slice(i, end);
+      html += span('com', comment);
+      i += comment.length;
+      continue;
+    }
+
+    if (rest.startsWith('/*')) {
+      const end = src.indexOf('*/', i + 2);
+      if (end < 0) {
+        html += span('com', src.slice(i));
+        break;
+      }
+      html += span('com', src.slice(i, end + 2));
+      i = end + 2;
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      let end = i + 1;
+      while (end < src.length) {
+        if (src[end] === '\\') { end += 2; continue; }
+        if (src[end] === char) { end++; break; }
+        if (src[end] === '\n') break;
+        end++;
+      }
+      html += span(char === '"' ? 'str' : 'char', src.slice(i, end));
+      i = end;
+      continue;
+    }
+
+    const number = rest.match(numberPattern);
+    if (number) {
+      html += span('num', number[0]);
+      i += number[0].length;
+      continue;
+    }
+
+    const identifier = rest.match(identifierPattern);
+    if (identifier) {
+      const word = identifier[0];
+      const next = src.slice(i + word.length).match(/^\s*/)[0].length + i + word.length;
+      const kind = types.has(word) ? 'ty'
+        : keywords.has(word) ? 'kw'
+        : builtins.has(word) || src[next] === '(' ? 'fn'
+        : /^[A-Z][A-Z0-9_]*$/.test(word) ? 'constant'
+        : '';
+      html += kind ? span(kind, word) : escapeHtml(word);
+      i += word.length;
+      continue;
+    }
+
+    const operator = rest.match(/^(?:>>=|<<=|\.\.\.|->|\+\+|--|&&|\|\||==|!=|<=|>=|<<|>>|\+=|-=|\*=|\/=|%=|&=|\|=|\^=)/);
+    if (operator) {
+      html += span('op', operator[0]);
+      i += operator[0].length;
+      continue;
+    }
+
+    html += /[+\-*\/%=<>!&|^~?:]/.test(char) ? span('op', char) : escapeHtml(char);
+    i++;
+  }
+
+  return html + '\n'; // trailing newline keeps the last line aligned in the overlay
 }
 
 codeInput.addEventListener('input', refreshEditor);
@@ -1036,13 +1116,98 @@ codeInput.addEventListener('scroll', () => {
   overlay.scrollLeft = codeInput.scrollLeft;
   lineNumbers.scrollTop = codeInput.scrollTop;
 });
-// Tab inserts 4 spaces
+// Editor conveniences keep manual code entry aligned with the highlighted layer.
 codeInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const value = codeInput.value;
+    const start = codeInput.selectionStart;
+    const end = codeInput.selectionEnd;
+    const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    const linePrefix = value.slice(lineStart, start);
+    const indent = linePrefix.match(/^\s*/)[0];
+    const after = value.slice(end);
+    const opensBlock = /[({\[]\s*$/.test(linePrefix);
+    const closesBlockNext = /^\s*[)}\]]/.test(after);
+    const nextIndent = closesBlockNext && !opensBlock ? indent.slice(0, Math.max(0, indent.length - 4))
+      : opensBlock ? `${indent}    ` : indent;
+    const insert = opensBlock && closesBlockNext
+      ? `\n${nextIndent}\n${indent}`
+      : `\n${nextIndent}`;
+    codeInput.setRangeText(insert, start, end, 'end');
+    if (opensBlock && closesBlockNext) {
+      const caret = start + 1 + nextIndent.length;
+      codeInput.selectionStart = codeInput.selectionEnd = caret;
+    }
+    refreshEditor();
+    return;
+  }
+
   if (e.key === 'Tab') {
     e.preventDefault();
-    const s = codeInput.selectionStart, en = codeInput.selectionEnd;
-    codeInput.value = codeInput.value.slice(0, s) + '    ' + codeInput.value.slice(en);
-    codeInput.selectionStart = codeInput.selectionEnd = s + 4;
+    const start = codeInput.selectionStart;
+    const end = codeInput.selectionEnd;
+    if (start === end && !e.shiftKey) {
+      codeInput.setRangeText('    ', start, end, 'end');
+    } else {
+      const value = codeInput.value;
+      const firstLineStart = value.lastIndexOf('\n', start - 1) + 1;
+      const lastLineEnd = value.indexOf('\n', end);
+      const rangeEnd = lastLineEnd < 0 ? value.length : lastLineEnd;
+      const block = value.slice(firstLineStart, rangeEnd);
+      const changed = block.split('\n').map(line => {
+        if (e.shiftKey) return line.startsWith('    ') ? line.slice(4) : line.replace(/^\t/, '');
+        return `    ${line}`;
+      }).join('\n');
+      codeInput.value = value.slice(0, firstLineStart) + changed + value.slice(rangeEnd);
+      codeInput.selectionStart = firstLineStart;
+      codeInput.selectionEnd = firstLineStart + changed.length;
+    }
+    refreshEditor();
+    return;
+  }
+
+  if (e.key === 'Backspace' && codeInput.selectionStart === codeInput.selectionEnd) {
+    const caret = codeInput.selectionStart;
+    const beforeCaret = codeInput.value.slice(Math.max(0, caret - 4), caret);
+    if (beforeCaret === '    ') {
+      e.preventDefault();
+      codeInput.setRangeText('', caret - 4, caret, 'end');
+      refreshEditor();
+      return;
+    }
+  }
+
+  const pairs = { '(': ')', '[': ']', '{': '}', '"': '"', "'": "'" };
+  const closers = new Set(Object.values(pairs));
+  const start = codeInput.selectionStart;
+  const end = codeInput.selectionEnd;
+  const value = codeInput.value;
+  if (closers.has(e.key) && start === end && value[start] === e.key) {
+    e.preventDefault();
+    codeInput.selectionStart = codeInput.selectionEnd = start + 1;
+    return;
+  }
+  if (e.key === '}' && start === end) {
+    const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    const leading = value.slice(lineStart, start);
+    if (leading.trim() === '') {
+      e.preventDefault();
+      const dedented = leading.length >= 4 && leading.endsWith('    ')
+        ? leading.slice(0, -4) : leading;
+      const braceAt = lineStart + dedented.length;
+      codeInput.setRangeText(dedented + '}', lineStart, start, 'end');
+      codeInput.selectionStart = codeInput.selectionEnd = braceAt + 1;
+      refreshEditor();
+      return;
+    }
+  }
+  if (Object.hasOwn(pairs, e.key)) {
+    e.preventDefault();
+    const insertStart = codeInput.selectionStart;
+    const insertEnd = codeInput.selectionEnd;
+    codeInput.setRangeText(`${e.key}${pairs[e.key]}`, insertStart, insertEnd, 'select');
+    codeInput.selectionStart = codeInput.selectionEnd = insertStart + 1;
     refreshEditor();
   }
 });
