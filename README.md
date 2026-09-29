@@ -27,21 +27,21 @@
 
 ### Run locally
 
-No build step needed — just serve the folder with any static server:
-
 ```bash
-# Option 1: Python
-python3 -m http.server 8080
-
-# Option 2: Node
-npx serve .
+npm run dev
 ```
 
-Then open <http://localhost:8080>. The landing page opens first; use **Start visualizing** to open the interactive tool.
+Then open <http://localhost:4173>. Enter a workspace name and choose **Go**; the local server serves the workspace route during development.
+
+### Enable shared workspaces
+
+The app uses Supabase's browser REST API for cross-device shared code. Create a Supabase project, run [`database/supabase-workspaces.sql`](database/supabase-workspaces.sql) in its SQL Editor, then copy [`assets/js/backend-config.example.js`](assets/js/backend-config.example.js) to `assets/js/backend-config.js` and fill in the project URL and **publishable** key. Never put a secret or service-role key in browser code. The publishable key is public by design; database access is controlled by the included row-level security policies.
+
+Deploy the updated repository to GitHub Pages after configuring the key. Slugs are public shared workspaces: anyone who knows a slug can read and edit its C source. This version syncs the source buffer, not accounts or private workspaces.
 
 ### Use the live version
 
-Just visit **https://rritu-018.github.io/c-memory-visualizer/** — pick a sample from the dropdown, hit **Load**, then **▶ Run** and step through.
+Just visit **https://rritu-018.github.io/C_Memory_Visualizer/**, enter a workspace name, and choose **Go**. In the visualizer, hit **▶ Run** and step through.
 
 ---
 
@@ -68,21 +68,25 @@ You'll see `x` land on the **Stack**, `p` get drawn pointing to it with an arrow
 
 ```
 c-memory-visualizer/
-├── index.html      # Landing page served at the project root
+├── index.html      # Root workspace-name form
+├── 404.html        # GitHub Pages fallback for /<slug> routes
 ├── visualizer.html # Interactive editor + memory regions
+├── landing.html    # Original marketing landing page
 ├── assets/
 │   ├── css/
 │   │   └── styles.css # Shared visualizer theme and responsive layout
 │   └── js/
-│       └── app.js     # C tokenizer → parser → interpreter → renderer
+│       ├── app.js     # Simulator, editor, slug routing, and sync
+│       ├── backend-config.example.js
+│       └── backend-config.js # Supabase URL + publishable key
+├── tools/dev-server.mjs # Local path fallback server
 ├── docs/              # Architecture and development notes
-├── server/            # Future API service (documented placeholder)
-├── database/          # Future schema and migrations (documented placeholder)
+├── database/           # Supabase schema and RLS setup
 ├── README.md
 └── LICENSE
 ```
 
-The HTML entry pages remain at the repository root so GitHub Pages can continue to serve the landing page at the project URL. Browser assets are grouped under `assets/`. The `server/` and `database/` directories document the planned backend boundary; they do not contain a running backend or database yet.
+GitHub Pages serves `404.html` for unknown `/<slug>` paths, allowing the visualizer to retain the requested workspace URL. `landing.html` preserves the previous marketing page.
 
 See [the architecture guide](docs/architecture.md) for a suggested path from this static prototype to a multi-user app.
 

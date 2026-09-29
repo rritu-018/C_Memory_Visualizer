@@ -2,9 +2,9 @@
 
 ## Current application
 
-This repository is a static GitHub Pages app. `index.html` is the public landing page, and `visualizer.html` loads the interactive simulator. The simulator is currently implemented in one browser script at `assets/js/app.js`; it parses and runs the supported C subset locally. There is no API, account system, or database, so user programs are not shared or stored online.
+The app is served as static pages from GitHub Pages. The root `index.html` collects a workspace slug, while `404.html` acts as the path fallback for `/<slug>` and loads the matching visualizer. Workspace source is stored in Supabase Postgres and synced through its browser REST API. The simulator still parses and runs the supported C subset in the browser; it is not yet a standards-compliant C compiler.
 
-The root HTML files are intentional: GitHub Pages serves `index.html` as the project site's entry page. Shared browser code and styles live under `assets/`.
+The public publishable API key is used in the browser with row-level security. The table is open to unauthenticated reads and writes so people can share a slug without account registration. Anyone with the slug can edit it, so workspaces are public and not private.
 
 ## Suggested production shape
 
@@ -21,12 +21,11 @@ database/                       Future schema, migrations, and seed data
 For saved programs, accounts, sharing, and live collaboration, a practical next architecture is:
 
 ```text
-Browser app → HTTPS API → PostgreSQL
-                  ├──── authentication provider
-                  └──── realtime channel (only for collaboration features)
+Browser app → Supabase REST API → PostgreSQL
+                  └──── periodic polling for shared workspace updates
 ```
 
-Use a managed PostgreSQL service with managed authentication for the first production version, or a separately deployed TypeScript/Node API with PostgreSQL if the project needs custom execution controls. Keep C parsing and simulation in the browser for now. Never execute submitted C on the API server; if server-side execution is added later, isolate it in a locked-down worker/container with strict CPU, memory, and time limits.
+The initial shared-workspace feature uses Supabase directly. Keep C parsing and simulation in the browser for now. Never execute submitted C on the API server; if a real compiler is added later, isolate it in a locked-down worker/container with strict CPU, memory, and time limits.
 
 ## Suggested milestones
 
@@ -53,4 +52,4 @@ Use a managed PostgreSQL service with managed authentication for the first produ
 - Is managed infrastructure preferred, or should the API and database be self-hosted?
 - What user and traffic limits should the first production release support?
 
-The current `server/` and `database/` directories are placeholders for these future components. No backend or database is provisioned by this repository yet.
+Supabase must be provisioned and configured before cross-device sync works. See the setup steps in the README and SQL in `database/`.

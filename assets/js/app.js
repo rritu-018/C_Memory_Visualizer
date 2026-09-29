@@ -989,13 +989,163 @@ const stepTotalEl = $('#stepTotal');
 const stepDescEl = $('#stepDescription');
 const speedEl = $('#speed');
 const arrowLayer = $('#arrowLayer');
+const workspaceNameEl = $('#workspaceName');
+const workspaceStatusEl = $('#workspaceStatus');
 
 let snapshots = [];
 let cursor = 0;
 let autoTimer = null;
+let workspaceSlug = null;
+let workspaceReady = false;
+let workspaceDirty = false;
+let workspaceSaving = false;
+let workspaceSaveTimer = null;
+let workspacePollTimer = null;
+let lastWorkspaceUpdate = null;
+
+const backendConfig = window.CMV_BACKEND_CONFIG || {};
+const supabaseUrl = (backendConfig.supabaseUrl || '').replace(/\/+$/, '');
+const publishableKey = backendConfig.publishableKey || '';
+const cloudSyncEnabled = Boolean(supabaseUrl && publishableKey);
+
+function readWorkspaceSlug() {
+  const basePath = document.querySelector('meta[name="app-base-path"]')?.content || '/';
+  const base = basePath.endsWith('/') ? basePath : `${basePath}/`;
+  let route = location.pathname.startsWith(base) ? location.pathname.slice(base.length) : location.pathname.replace(/^\/+/, '');
+  route = route.replace(/\/+$/, '');
+  if (!route || /^(?:index|visualizer|404)\.html$/i.test(route)) return null;
+  const segment = route.split('/').pop();
+  let decoded;
+  try { decoded = decodeURIComponent(segment); } catch { return null; }
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(decoded) ? decoded.toLowerCase() : null;
+}
+
+function setWorkspaceStatus(message, state = '') {
+  if (!workspaceStatusEl) return;
+  workspaceStatusEl.textContent = message;
+  workspaceStatusEl.dataset.state = state;
+}
+
+function workspaceApiUrl(slug) {
+  const query = new URLSearchParams({ select: 'slug,source,updated_at', slug: `eq.${slug}` });
+  return `${supabaseUrl}/rest/v1/visualizer_workspaces?${query}`;
+}
+
+async function fetchWorkspace(slug) {
+  const response = await fetch(workspaceApiUrl(slug), {
+    cache: 'no-store',
+    headers: { apikey: publishableKey }
+  });
+  if (!response.ok) throw new Error(`Workspace read failed (${response.status}).`);
+  const rows = await response.json();
+  return rows[0] || null;
+}
+
+function scheduleWorkspaceSave() {
+  if (!workspaceSlug || !workspaceReady) return;
+  if (!cloudSyncEnabled) {
+    setWorkspaceStatus('Cloud sync needs Supabase setup', 'error');
+    return;
+  }
+  workspaceDirty = true;
+  setWorkspaceStatus('Saving changes…', 'saving');
+  clearTimeout(workspaceSaveTimer);
+  workspaceSaveTimer = setTimeout(saveWorkspace, 700);
+}
+
+async function saveWorkspace() {
+  if (!workspaceSlug || !workspaceReady || !workspaceDirty || !cloudSyncEnabled) return;
+  const source = codeInput.value;
+  if (new TextEncoder().encode(source).length > 100000) {
+    setWorkspaceStatus('This workspace is over the 100 KB source limit', 'error');
+    return;
+  }
+  workspaceSaving = true;
+  const nextTimestamp = Math.max(Date.now(), Date.parse(lastWorkspaceUpdate || 0) + 1);
+  const updatedAt = new Date(nextTimestamp).toISOString();
+  try {
+    const response = await fetch(`${supabaseUrl}/rest/v1/visualizer_workspaces?on_conflict=slug`, {
+      method: 'POST',
+      headers: {
+        apikey: publishableKey,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates,return=representation'
+      },
+      body: JSON.stringify({ slug: workspaceSlug, source, updated_at: updatedAt })
+    });
+    if (!response.ok) throw new Error(`Workspace save failed (${response.status}).`);
+    const rows = await response.json();
+    lastWorkspaceUpdate = rows[0]?.updated_at || updatedAt;
+    if (codeInput.value === source) {
+      workspaceDirty = false;
+      setWorkspaceStatus('Saved · syncing with this workspace', 'saved');
+    } else {
+      workspaceDirty = true;
+      scheduleWorkspaceSave();
+    }
+  } catch (error) {
+    setWorkspaceStatus('Could not sync · check workspace setup or connection', 'error');
+    console.error(error);
+  } finally {
+    workspaceSaving = false;
+  }
+}
+
+async function pollWorkspace() {
+  if (!workspaceSlug || !workspaceReady || !cloudSyncEnabled || document.hidden) return;
+  try {
+    const record = await fetchWorkspace(workspaceSlug);
+    if (!record || record.updated_at === lastWorkspaceUpdate) return;
+    lastWorkspaceUpdate = record.updated_at;
+    if (workspaceDirty || workspaceSaving) {
+      setWorkspaceStatus('Another visitor made changes · your edits are still pending', 'saving');
+      return;
+    }
+    codeInput.value = record.source;
+    refreshEditor({ persist: false });
+    runCode();
+    setWorkspaceStatus('Updated · syncing with this workspace', 'saved');
+  } catch (error) {
+    setWorkspaceStatus('Reconnecting to shared workspace…', 'error');
+    console.error(error);
+  }
+}
+
+async function initializeWorkspace() {
+  workspaceSlug = readWorkspaceSlug();
+  if (workspaceNameEl) workspaceNameEl.textContent = workspaceSlug ? `Workspace /${workspaceSlug}` : '';
+  let initialSource = SAMPLES.basic;
+
+  if (workspaceSlug && cloudSyncEnabled) {
+    setWorkspaceStatus('Loading shared workspace…', 'saving');
+    codeInput.disabled = true;
+    try {
+      const record = await fetchWorkspace(workspaceSlug);
+      if (record) {
+        initialSource = record.source;
+        lastWorkspaceUpdate = record.updated_at;
+        setWorkspaceStatus('Shared workspace · syncing live', 'saved');
+      } else {
+        setWorkspaceStatus('New shared workspace · edits save automatically', 'saved');
+      }
+    } catch (error) {
+      setWorkspaceStatus('Could not load shared workspace · check setup or connection', 'error');
+      console.error(error);
+    }
+    codeInput.disabled = false;
+  } else if (workspaceSlug) {
+    setWorkspaceStatus('Add Supabase settings to enable shared workspaces', 'error');
+  }
+
+  codeInput.value = initialSource;
+  workspaceReady = true;
+  refreshEditor({ persist: false });
+  runCode();
+  if (workspaceSlug && cloudSyncEnabled) workspacePollTimer = setInterval(pollWorkspace, 3000);
+}
 
 /* ---- Editor: line numbers + syntax highlighting overlay ---- */
-function refreshEditor() {
+function refreshEditor({ persist = true } = {}) {
   const code = codeInput.value;
   const lineCount = (code.match(/\n/g) || []).length + 1;
   lineNumbers.textContent = Array.from({ length: lineCount }, (_, i) => i + 1).join('\n');
@@ -1004,6 +1154,7 @@ function refreshEditor() {
   overlay.scrollTop = codeInput.scrollTop;
   overlay.scrollLeft = codeInput.scrollLeft;
   lineNumbers.scrollTop = codeInput.scrollTop;
+  if (persist) scheduleWorkspaceSave();
 }
 function escapeHtml(s) { return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function highlightC(src) {
@@ -1436,8 +1587,9 @@ $('#loadSampleBtn').addEventListener('click', () => {
 window.addEventListener('resize', () => {
   if (snapshots.length) drawArrows(snapshots[cursor]);
 });
+window.addEventListener('online', () => {
+  if (workspaceDirty) scheduleWorkspaceSave();
+});
 
 /* ---- Init ---- */
-codeInput.value = SAMPLES.basic;
-refreshEditor();
-runCode();
+initializeWorkspace();

@@ -38,6 +38,10 @@ button { font-family: inherit; }
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 .tagline { margin: 2px 0 0; font-size: 12.5px; color: #9aa6b2; }
+.tagline #workspaceName { margin-left: 6px; color: #c9fb72; font-weight: 600; }
+#workspaceStatus { margin-left: 6px; color: #64d9ff; }
+#workspaceStatus[data-state="saving"] { color: #ffcf86; }
+#workspaceStatus[data-state="error"] { color: #ff9a86; }
 
 .top-actions { display: flex; align-items: center; gap: 10px; }
 .sample-label { font-size: 13px; color: #9aa6b2; display: flex; align-items: center; gap: 8px; }

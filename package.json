@@ -1,0 +1,8 @@
+{
+  "name": "c-memory-visualizer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node tools/dev-server.mjs"
+  }
+}
