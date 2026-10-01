@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { compileWorkspace, runCompiled, runTerminalCommand } from './compiler.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const port = Number(process.env.PORT || 4173);
@@ -19,17 +20,61 @@ function send(res, status, body, contentType = 'text/plain; charset=utf-8') {
   res.end(body);
 }
 
-const server = createServer(async (req, res) => {
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    send(res, 405, 'Method not allowed');
-    return;
-  }
+function sendJson(res, status, body) {
+  send(res, status, JSON.stringify(body), 'application/json; charset=utf-8');
+}
 
+async function readJson(req, maxBytes = 600_000) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > maxBytes) throw new Error('Request body exceeds the size limit.');
+    chunks.push(chunk);
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { throw new Error('Request body must be valid JSON.'); }
+}
+
+const server = createServer(async (req, res) => {
   let pathname;
   try {
     pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
   } catch {
     send(res, 400, 'Bad request');
+    return;
+  }
+
+  if (pathname.startsWith('/api/')) {
+    if (req.method !== 'POST') {
+      sendJson(res, 405, { error: 'Method not allowed.' });
+      return;
+    }
+    try {
+      const body = await readJson(req);
+      if (pathname === '/api/compile') {
+        sendJson(res, 200, await compileWorkspace(body.files));
+        return;
+      }
+      if (pathname === '/api/run') {
+        sendJson(res, 200, await runCompiled(body.compilationId, body.stdin || ''));
+        return;
+      }
+      if (pathname === '/api/terminal') {
+        sendJson(res, 200, await runTerminalCommand(body.command, body.files, body.compilationId || '', body.stdin || ''));
+        return;
+      }
+      sendJson(res, 404, { error: 'Unknown API endpoint.' });
+    } catch (error) {
+      const message = error.message || 'Compiler service error.';
+      const status = message.includes('size limit') || message.includes('valid JSON') ? 400 : 422;
+      sendJson(res, status, { error: message });
+    }
+    return;
+  }
+
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    send(res, 405, 'Method not allowed');
     return;
   }
 
@@ -71,6 +116,6 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, () => {
+server.listen(port, '127.0.0.1', () => {
   console.log(`C Memory Visualizer ready at http://localhost:${port}`);
 });

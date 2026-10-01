@@ -97,6 +97,13 @@ function sizeOfType(t) {
 /* ---------------- Tokenizer ---------------- */
 function tokenize(src) {
   const tokens = [];
+  const push = (type, value, start) => tokens.push({ type, value, start });
+  const lexicalError = (message, start) => {
+    const error = new Error(message);
+    error.offset = start;
+    error.name = 'SyntaxError';
+    throw error;
+  };
   let i = 0;
   const n = src.length;
   const isAlpha = c => /[A-Za-z_]/.test(c);
@@ -104,6 +111,7 @@ function tokenize(src) {
   const isDigit = c => /[0-9]/.test(c);
 
   while (i < n) {
+    const start = i;
     const c = src[i];
     // whitespace
     if (/\s/.test(c)) { i++; continue; }
@@ -116,6 +124,7 @@ function tokenize(src) {
     if (c === '/' && src[i + 1] === '*') {
       i += 2;
       while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      if (i >= n) lexicalError('Unterminated block comment', start);
       i += 2; continue;
     }
     // preprocessor — skip to end of line
@@ -126,28 +135,33 @@ function tokenize(src) {
     // string literal
     if (c === '"') {
       let s = ''; i++;
-      while (i < n && src[i] !== '"') {
+      while (i < n && src[i] !== '"' && src[i] !== '\n') {
         if (src[i] === '\\' && i + 1 < n) { s += src[i] + src[i + 1]; i += 2; continue; }
         s += src[i++];
       }
-      i++; // closing "
-      tokens.push({ type: 'string', value: s }); continue;
+      if (src[i] !== '"') lexicalError('Unterminated string literal', start);
+      i++;
+      push('string', s, start); continue;
     }
     // char literal
     if (c === "'") {
       let s = ''; i++;
       while (i < n && src[i] !== "'") {
+        if (src[i] === '\n') lexicalError('Unterminated character literal', start);
         if (src[i] === '\\' && i + 1 < n) { s += src[i + 1]; i += 2; continue; }
         s += src[i++];
       }
+      if (src[i] !== "'") lexicalError('Unterminated character literal', start);
+      if (s.length !== 1) lexicalError('A character literal must contain one character', start);
       i++;
-      tokens.push({ type: 'char', value: s.charCodeAt(0) || 0 }); continue;
+      push('char', s.charCodeAt(0) || 0, start); continue;
     }
     // numbers
     if (isDigit(c)) {
       let s = '';
       while (i < n && /[0-9.]/.test(src[i])) s += src[i++];
-      tokens.push({ type: 'number', value: parseFloat(s) }); continue;
+      if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(s)) lexicalError(`Invalid number '${s}'`, start);
+      push('number', parseFloat(s), start); continue;
     }
     // identifiers / keywords
     if (isAlpha(c)) {
@@ -158,22 +172,21 @@ function tokenize(src) {
         'struct','return','if','else','while','for','do','break','continue',
         'sizeof','const','static'
       ]);
-      tokens.push({ type: KW.has(s) ? 'kw' : 'id', value: s });
+      push(KW.has(s) ? 'kw' : 'id', s, start);
       continue;
     }
     // multi-char punct
     const two = src.substr(i, 2);
     if (['==','!=','<=','>=','&&','||','->','++','--','+=','-=','*=','/='].includes(two)) {
-      tokens.push({ type: 'punct', value: two }); i += 2; continue;
+      push('punct', two, start); i += 2; continue;
     }
     // single-char punct
     if ('(){}[];,=+-*/%<>&|!.?:'.includes(c)) {
-      tokens.push({ type: 'punct', value: c }); i++; continue;
+      push('punct', c, start); i++; continue;
     }
-    // unknown — skip
-    i++;
+    lexicalError(`Unexpected character '${c}'`, start);
   }
-  tokens.push({ type: 'eof', value: null });
+  push('eof', null, n);
   return tokens;
 }
 
@@ -190,10 +203,16 @@ function tokenize(src) {
 class Parser {
   constructor(tokens) { this.t = tokens; this.i = 0; }
   peek(k = 0) { return this.t[this.i + k]; }
+  fail(message, token = this.peek()) {
+    const error = new Error(message);
+    error.offset = token?.start ?? 0;
+    error.name = 'SyntaxError';
+    throw error;
+  }
   eat(type, value) {
     const tk = this.t[this.i];
-    if (tk.type !== type) throw new Error(`Expected ${type} '${value ?? ''}', got ${tk.type} '${tk.value}'`);
-    if (value !== undefined && tk.value !== value) throw new Error(`Expected '${value}', got '${tk.value}'`);
+    if (tk.type !== type) this.fail(`Expected ${value === undefined ? type : `'${value}'`}, found ${tk.type === 'eof' ? 'end of program' : `'${tk.value}'`}`, tk);
+    if (value !== undefined && tk.value !== value) this.fail(`Expected '${value}', found '${tk.value}'`, tk);
     this.i++; return tk;
   }
   match(type, value) {
@@ -219,21 +238,15 @@ class Parser {
       while (this.match('kw', 'static') || this.match('kw', 'const')) this.i++;
 
       // declaration: type name ...
-      const startedAt = this.i;
       const type = this.parseType();
-      if (!this.match('id')) {
-        // not a real decl — skip token to avoid infinite loop
-        if (this.i === startedAt) this.i++;
-        continue;
-      }
       const nameTk = this.eat('id');
       // function?
       if (this.match('punct', '(')) {
-        program.functions.push(this.parseFunctionRest(type, nameTk.value));
+        program.functions.push(this.parseFunctionRest(type, nameTk.value, nameTk.start));
       } else {
         // global var
-        const decl = this.parseVarDeclRest(type, nameTk.value);
-        this.consumeIf('punct', ';');
+        const decl = this.parseVarDeclRest(type, nameTk.value, nameTk.start);
+        this.eat('punct', ';');
         program.globals.push(decl);
       }
     }
@@ -242,24 +255,26 @@ class Parser {
 
   parseStructDecl() {
     this.eat('kw', 'struct');
-    const name = this.eat('id').value;
+    const nameToken = this.eat('id');
+    const name = nameToken.value;
     this.eat('punct', '{');
     const fields = [];
-    while (!this.match('punct', '}')) {
+    while (!this.match('punct', '}') && !this.match('eof')) {
       const type = this.parseType();
-      const fname = this.eat('id').value;
+      const fieldToken = this.eat('id');
+      const fname = fieldToken.value;
       let isArray = false, arraySize = 0;
       if (this.consumeIf('punct', '[')) {
         isArray = true;
         if (this.match('number')) { arraySize = this.eat('number').value; }
         this.eat('punct', ']');
       }
-      fields.push({ type, name: fname, isArray, arraySize });
+      fields.push({ type, name: fname, isArray, arraySize, offset: fieldToken.start });
       this.eat('punct', ';');
     }
     this.eat('punct', '}');
-    this.consumeIf('punct', ';');
-    return { kind: 'StructDecl', name, fields };
+    this.eat('punct', ';');
+    return { kind: 'StructDecl', name, fields, offset: nameToken.start };
   }
 
   parseType() {
@@ -269,31 +284,36 @@ class Parser {
       const id = this.eat('id').value;
       t = `struct ${id}`;
     } else if (this.match('kw') && TYPE_SIZE[this.peek().value] !== undefined) {
-      t = this.eat('kw').value;
-      // allow long long, long int, etc — just collapse
-      while (this.match('kw') && TYPE_SIZE[this.peek().value] !== undefined) this.i++;
-    } else {
-      // unknown type — assume int
-      t = 'int';
-    }
+      const words = [this.eat('kw').value];
+      while (this.match('kw') && TYPE_SIZE[this.peek().value] !== undefined) words.push(this.eat('kw').value);
+      const normalized = [...words].sort().join(' ');
+      const valid = words.length === 1
+        || normalized === 'int long'
+        || normalized === 'int short'
+        || normalized === 'long long'
+        || normalized === 'int long long';
+      if (!valid) this.fail(`Invalid type specifier sequence '${words.join(' ')}'`);
+      t = words.includes('long') ? 'long' : words.includes('short') ? 'short' : words[0];
+    } else this.fail('Expected a supported type (int, char, float, double, long, or struct name)');
     while (this.consumeIf('punct', '*')) t += '*';
     return t;
   }
 
-  parseFunctionRest(returnType, name) {
+  parseFunctionRest(returnType, name, offset) {
     this.eat('punct', '(');
     const params = [];
-    if (!this.match('punct', ')')) {
+    if (this.match('kw', 'void') && this.peek(1)?.value === ')') this.i++;
+    else if (!this.match('punct', ')')) {
       while (true) {
         const t = this.parseType();
-        const pn = this.match('id') ? this.eat('id').value : '_';
+        const pn = this.eat('id').value;
         params.push({ kind: 'VarDecl', type: t, name: pn });
         if (!this.consumeIf('punct', ',')) break;
       }
     }
     this.eat('punct', ')');
     const body = this.parseBlock();
-    return { kind: 'FunctionDecl', name, returnType, params, body };
+    return { kind: 'FunctionDecl', name, returnType, params, body, offset };
   }
 
   parseBlock() {
@@ -312,7 +332,7 @@ class Parser {
       this.i++;
       let expr = null;
       if (!this.match('punct', ';')) expr = this.parseExpression();
-      this.consumeIf('punct', ';');
+      this.eat('punct', ';');
       return { kind: 'Return', expr };
     }
     if (this.match('kw', 'if')) return this.parseIf();
@@ -322,20 +342,20 @@ class Parser {
     // declaration?
     if (this.isDeclStart()) {
       const type = this.parseType();
-      const name = this.eat('id').value;
-      const decl = this.parseVarDeclRest(type, name);
+      const name = this.eat('id');
+      const decl = this.parseVarDeclRest(type, name.value, name.start);
       // optional comma decls
       const list = [decl];
       while (this.consumeIf('punct', ',')) {
-        const n2 = this.eat('id').value;
-        list.push(this.parseVarDeclRest(type, n2));
+        const n2 = this.eat('id');
+        list.push(this.parseVarDeclRest(type, n2.value, n2.start));
       }
-      this.consumeIf('punct', ';');
+      this.eat('punct', ';');
       return list.length === 1 ? decl : { kind: 'MultiDecl', decls: list };
     }
     // expression statement
     const e = this.parseExpression();
-    this.consumeIf('punct', ';');
+    this.eat('punct', ';');
     return { kind: 'Expr', expr: e };
   }
 
@@ -345,7 +365,7 @@ class Parser {
     return false;
   }
 
-  parseVarDeclRest(type, name) {
+  parseVarDeclRest(type, name, offset = this.peek().start) {
     let isArray = false, arraySize = null, init = null;
     if (this.consumeIf('punct', '[')) {
       isArray = true;
@@ -371,7 +391,7 @@ class Parser {
         init = this.parseExpression();
       }
     }
-    return { kind: 'VarDecl', type, name, isArray, arraySize, init };
+    return { kind: 'VarDecl', type, name, isArray, arraySize, init, offset };
   }
 
   parseIf() {
@@ -399,9 +419,9 @@ class Parser {
         init = { kind: 'Expr', expr: this.parseExpression() };
       }
     }
-    this.consumeIf('punct', ';');
+    this.eat('punct', ';');
     if (!this.match('punct', ';')) cond = this.parseExpression();
-    this.consumeIf('punct', ';');
+    this.eat('punct', ';');
     if (!this.match('punct', ')')) update = this.parseExpression();
     this.eat('punct', ')');
     const body = this.parseStatement();
@@ -437,6 +457,12 @@ class Parser {
   parseMultiplicative(){ return this.binLeft(this.parseUnary, ['*','/','%']); }
 
   parseUnary() {
+    if (this.match('punct', '(') && this.isDeclStart()) {
+      this.i++;
+      const type = this.parseType();
+      this.eat('punct', ')');
+      return { kind: 'Cast', type, expr: this.parseUnary() };
+    }
     if (this.match('punct', '&')) { this.i++; return { kind: 'AddrOf', expr: this.parseUnary() }; }
     if (this.match('punct', '*')) { this.i++; return { kind: 'Deref',  expr: this.parseUnary() }; }
     if (this.match('punct', '-')) { this.i++; return { kind: 'Unary', op: '-', expr: this.parseUnary() }; }
@@ -490,13 +516,176 @@ class Parser {
       const e = this.parseExpression(); this.eat('punct', ')');
       return { kind: 'SizeofExpr', expr: e };
     }
-    if (tk.type === 'id') { this.i++; return { kind: 'Id', name: tk.value }; }
+    if (tk.type === 'id') { this.i++; return { kind: 'Id', name: tk.value, offset: tk.start }; }
     if (tk.type === 'punct' && tk.value === '(') {
       this.i++; const e = this.parseExpression(); this.eat('punct', ')'); return e;
     }
-    // unknown — consume to avoid loops
-    this.i++; return { kind: 'Num', value: 0 };
+    this.fail(tk.type === 'eof' ? 'Expected an expression, found end of program' : `Expected an expression, found '${tk.value}'`, tk);
   }
+}
+
+function validateProgram(program) {
+  const fail = (message, node = {}) => {
+    const error = new Error(message);
+    error.offset = node.offset ?? 0;
+    error.name = 'ProgramError';
+    throw error;
+  };
+  const structs = new Map();
+  const globals = new Map();
+  const functions = new Map();
+  const builtins = new Set(['printf', 'malloc', 'calloc', 'free']);
+  const knownTypes = new Set(['char', 'short', 'int', 'long', 'float', 'double', 'void']);
+
+  for (const struct of program.structs) {
+    if (structs.has(struct.name)) fail(`Struct '${struct.name}' is defined more than once`);
+    structs.set(struct.name, struct);
+  }
+  const checkType = (type, node) => {
+    const baseType = type.replace(/\*+$/, '');
+    if (baseType.startsWith('struct ')) {
+      const structName = baseType.slice('struct '.length);
+      if (!structs.has(structName)) fail(`Unknown struct type '${structName}'`, node);
+    } else if (!knownTypes.has(baseType)) fail(`Unsupported type '${type}'`, node);
+  };
+  for (const struct of program.structs) {
+    const names = new Set();
+    for (const field of struct.fields) {
+      checkType(field.type, field);
+      if (names.has(field.name)) fail(`Struct field '${field.name}' is declared more than once`);
+      names.add(field.name);
+    }
+  }
+  for (const global of program.globals) {
+    checkType(global.type, global);
+    if (global.isArray && (!Number.isInteger(global.arraySize) || global.arraySize < 1))
+      fail(`Array '${global.name}' must have a positive integer size`, global);
+    if (globals.has(global.name)) fail(`Variable '${global.name}' is declared more than once`, global);
+    globals.set(global.name, global.type);
+  }
+  for (const fn of program.functions) {
+    if (functions.has(fn.name)) fail(`Function '${fn.name}' is defined more than once`, fn);
+    checkType(fn.returnType, fn);
+    fn.params.forEach(param => checkType(param.type, param));
+    functions.set(fn.name, fn);
+  }
+  const main = functions.get('main');
+  if (!main) fail("Missing required 'main' function");
+  if (main.params.length) fail("The visualizer's main() function must not have parameters", main);
+
+  const isAssignable = expr => ['Id', 'Deref', 'Index', 'Member'].includes(expr?.kind);
+  const validateExpr = (expr, scope, types) => {
+    if (!expr) return;
+    switch (expr.kind) {
+      case 'Num': case 'Str': return;
+      case 'Id':
+        if (!scope.has(expr.name)) fail(`Unknown variable '${expr.name}'`, expr);
+        return;
+      case 'Unary': case 'AddrOf': case 'Deref': case 'SizeofExpr':
+        validateExpr(expr.expr, scope, types);
+        if (expr.kind === 'Unary' && /^(?:pre|post)(?:\+\+|--)$/.test(expr.op) && !isAssignable(expr.expr))
+          fail('Increment and decrement require a variable or pointer target', expr);
+        return;
+      case 'Cast':
+        checkType(expr.type, expr); validateExpr(expr.expr, scope, types); return;
+      case 'Bin':
+        validateExpr(expr.left, scope, types); validateExpr(expr.right, scope, types); return;
+      case 'Assign':
+        if (!isAssignable(expr.target)) fail('Left side of an assignment must be a variable, pointer, array item, or struct field', expr.target);
+        validateExpr(expr.target, scope, types); validateExpr(expr.value, scope, types); return;
+      case 'Index':
+        validateExpr(expr.target, scope, types); validateExpr(expr.index, scope, types); return;
+      case 'Member': {
+        validateExpr(expr.target, scope, types);
+        if (expr.target.kind === 'Id') {
+          const targetType = types.get(expr.target.name) || '';
+          const base = targetType.replace(/\*+$/, '');
+          if (base.startsWith('struct ')) {
+            const struct = structs.get(base.slice('struct '.length));
+            if (struct && !struct.fields.some(field => field.name === expr.member))
+              fail(`Struct '${struct.name}' has no field '${expr.member}'`, expr);
+          }
+        }
+        return;
+      }
+      case 'Call': {
+        if (expr.callee.kind !== 'Id') fail('Only named functions can be called by the visualizer', expr.callee);
+        const name = expr.callee.name;
+        const fn = functions.get(name);
+        if (!fn && !builtins.has(name)) fail(`Unknown function '${name}'`, expr.callee);
+        if (fn && expr.args.length !== fn.params.length)
+          fail(`Function '${name}' expects ${fn.params.length} argument(s), but received ${expr.args.length}`, expr.callee);
+        if (name === 'malloc' && expr.args.length !== 1) fail('malloc() expects one argument', expr.callee);
+        if (name === 'calloc' && expr.args.length !== 2) fail('calloc() expects two arguments', expr.callee);
+        if (name === 'free' && expr.args.length !== 1) fail('free() expects one argument', expr.callee);
+        if (name === 'printf' && expr.args.length < 1) fail('printf() expects a format string', expr.callee);
+        expr.args.forEach(arg => validateExpr(arg, scope, types));
+        return;
+      }
+      default: fail(`Unsupported expression '${expr.kind}'`, expr);
+    }
+  };
+  const validateStatement = (statement, scope, types) => {
+    switch (statement.kind) {
+      case 'VarDecl': {
+        checkType(statement.type, statement);
+        if (statement.isArray && (!Number.isInteger(statement.arraySize) || statement.arraySize < 1))
+          fail(`Array '${statement.name}' must have a positive integer size`, statement);
+        if (scope.has(statement.name)) fail(`Variable '${statement.name}' is already declared in this scope`, statement);
+        scope.add(statement.name); types.set(statement.name, statement.type);
+        if (statement.init?.kind === 'ArrayInit') statement.init.items.forEach(item => validateExpr(item, scope, types));
+        else validateExpr(statement.init, scope, types);
+        return;
+      }
+      case 'MultiDecl':
+        statement.decls.forEach(decl => validateStatement(decl, scope, types)); return;
+      case 'Expr': validateExpr(statement.expr, scope, types); return;
+      case 'Return': validateExpr(statement.expr, scope, types); return;
+      case 'Block': {
+        const blockScope = new Set(scope), blockTypes = new Map(types);
+        statement.body.forEach(child => validateStatement(child, blockScope, blockTypes)); return;
+      }
+      case 'If':
+        validateExpr(statement.cond, scope, types);
+        if (statement.thenBranch) validateStatement(statement.thenBranch, new Set(scope), new Map(types));
+        if (statement.elseBranch) validateStatement(statement.elseBranch, new Set(scope), new Map(types));
+        return;
+      case 'While':
+        validateExpr(statement.cond, scope, types);
+        validateStatement(statement.body, new Set(scope), new Map(types)); return;
+      case 'For': {
+        const forScope = new Set(scope), forTypes = new Map(types);
+        if (statement.init) validateStatement(statement.init, forScope, forTypes);
+        validateExpr(statement.cond, forScope, forTypes);
+        validateExpr(statement.update, forScope, forTypes);
+        validateStatement(statement.body, new Set(forScope), new Map(forTypes)); return;
+      }
+      default: fail(`Unsupported statement '${statement.kind}'`, statement);
+    }
+  };
+
+  for (const global of program.globals) {
+    if (global.init?.kind === 'ArrayInit') global.init.items.forEach(item => validateExpr(item, new Set(globals.keys()), globals));
+    else validateExpr(global.init, new Set(globals.keys()), globals);
+  }
+  for (const fn of program.functions) {
+    const scope = new Set(globals.keys());
+    const types = new Map(globals);
+    for (const param of fn.params) {
+      if (scope.has(param.name)) fail(`Parameter '${param.name}' conflicts with another variable`, param);
+      scope.add(param.name); types.set(param.name, param.type);
+    }
+    fn.body.forEach(statement => validateStatement(statement, scope, types));
+  }
+}
+
+function formatSourceError(error, source) {
+  const offset = Math.max(0, Math.min(source.length, Number(error.offset) || 0));
+  const before = source.slice(0, offset);
+  const line = before.split('\n').length;
+  const lineStart = before.lastIndexOf('\n') + 1;
+  const column = offset - lineStart + 1;
+  return `Line ${line}, column ${column}: ${error.message}`;
 }
 
 /* ---------------- Interpreter / Memory simulator ---------------- */
@@ -735,6 +924,7 @@ class Simulator {
     switch (e.kind) {
       case 'Num': return e.value;
       case 'Str': return e.value;
+      case 'Cast': return this.evalExpr(e.expr, opts);
       case 'Id': {
         const v = this.findVar(e.name);
         if (!v) return 0;
@@ -984,6 +1174,11 @@ const lineNumbers = $('#lineNumbers');
 const overlay = $('#syntaxOverlay');
 const sampleSelect = $('#sampleSelect');
 const consoleOut = $('#consoleOut');
+const terminalOutput = $('#terminalOutput');
+let compilationId = null;
+let compiledFingerprint = '';
+let selectedFolderId = null;
+const expandedFolderIds = new Set();
 const stepIdxEl = $('#stepIdx');
 const stepTotalEl = $('#stepTotal');
 const stepDescEl = $('#stepDescription');
@@ -991,6 +1186,10 @@ const speedEl = $('#speed');
 const arrowLayer = $('#arrowLayer');
 const workspaceNameEl = $('#workspaceName');
 const workspaceStatusEl = $('#workspaceStatus');
+const programListEl = $('#programList');
+const activeProgramTitleEl = $('#activeProgramTitle');
+const editorWorkspaceEl = $('.editor-workspace');
+const toggleProgramsBtn = $('#toggleProgramsBtn');
 
 let snapshots = [];
 let cursor = 0;
@@ -1002,6 +1201,9 @@ let workspaceSaving = false;
 let workspaceSaveTimer = null;
 let workspacePollTimer = null;
 let lastWorkspaceUpdate = null;
+let workspacePrograms = [];
+let activeProgramId = null;
+let requestedActiveProgramId = null;
 
 const backendConfig = window.CMV_BACKEND_CONFIG || {};
 const supabaseUrl = (backendConfig.supabaseUrl || '').replace(/\/+$/, '');
@@ -1027,7 +1229,7 @@ function setWorkspaceStatus(message, state = '') {
 }
 
 function workspaceApiUrl(slug) {
-  const query = new URLSearchParams({ select: 'slug,source,updated_at', slug: `eq.${slug}` });
+  const query = new URLSearchParams({ select: 'slug,source,programs,active_program_id,updated_at', slug: `eq.${slug}` });
   return `${supabaseUrl}/rest/v1/visualizer_workspaces?${query}`;
 }
 
@@ -1042,9 +1244,11 @@ async function fetchWorkspace(slug) {
 }
 
 function scheduleWorkspaceSave() {
-  if (!workspaceSlug || !workspaceReady) return;
+  if (!workspaceReady) return;
+  syncActiveProgram();
   if (!cloudSyncEnabled) {
-    setWorkspaceStatus('Cloud sync needs Supabase setup', 'error');
+    saveWorkspaceLocally();
+    setWorkspaceStatus('Saved on this device · cloud sync unavailable', 'saved');
     return;
   }
   workspaceDirty = true;
@@ -1055,9 +1259,12 @@ function scheduleWorkspaceSave() {
 
 async function saveWorkspace() {
   if (!workspaceSlug || !workspaceReady || !workspaceDirty || !cloudSyncEnabled) return;
+  syncActiveProgram();
   const source = codeInput.value;
-  if (new TextEncoder().encode(source).length > 100000) {
-    setWorkspaceStatus('This workspace is over the 100 KB source limit', 'error');
+  const programsSnapshot = JSON.parse(JSON.stringify(workspacePrograms));
+  const sourceBytes = workspacePrograms.reduce((total, program) => total + new TextEncoder().encode(program.source || '').length, 0);
+  if (sourceBytes > 100000) {
+    setWorkspaceStatus('Workspace programs exceed the 100 KB source limit', 'error');
     return;
   }
   workspaceSaving = true;
@@ -1071,12 +1278,12 @@ async function saveWorkspace() {
         'Content-Type': 'application/json',
         Prefer: 'resolution=merge-duplicates,return=representation'
       },
-      body: JSON.stringify({ slug: workspaceSlug, source, updated_at: updatedAt })
+      body: JSON.stringify({ slug: workspaceSlug, source, programs: programsSnapshot, active_program_id: activeProgramId, updated_at: updatedAt })
     });
     if (!response.ok) throw new Error(`Workspace save failed (${response.status}).`);
     const rows = await response.json();
     lastWorkspaceUpdate = rows[0]?.updated_at || updatedAt;
-    if (codeInput.value === source) {
+    if (JSON.stringify(workspacePrograms) === JSON.stringify(programsSnapshot) && codeInput.value === source) {
       workspaceDirty = false;
       setWorkspaceStatus('Saved · syncing with this workspace', 'saved');
     } else {
@@ -1101,9 +1308,16 @@ async function pollWorkspace() {
       setWorkspaceStatus('Another visitor made changes · your edits are still pending', 'saving');
       return;
     }
-    codeInput.value = record.source;
+    workspacePrograms = normalizeWorkspacePrograms(record);
+    const active = workspacePrograms.find(program => program.id === record.active_program_id && program.kind !== 'folder')
+      || workspacePrograms.find(program => program.id === activeProgramId && program.kind !== 'folder') || workspacePrograms.find(program => program.kind !== 'folder');
+    activeProgramId = active.id;
+    codeInput.value = active.source;
+    renderProgramList();
+    activeProgramTitleEl.textContent = workspacePath(active);
     refreshEditor({ persist: false });
-    runCode();
+    showEmptyProgram();
+    invalidateCompilation();
     setWorkspaceStatus('Updated · syncing with this workspace', 'saved');
   } catch (error) {
     setWorkspaceStatus('Reconnecting to shared workspace…', 'error');
@@ -1114,7 +1328,7 @@ async function pollWorkspace() {
 async function initializeWorkspace() {
   workspaceSlug = readWorkspaceSlug();
   if (workspaceNameEl) workspaceNameEl.textContent = workspaceSlug ? `Workspace /${workspaceSlug}` : '';
-  let initialSource = SAMPLES.basic;
+  workspacePrograms = [createProgram('main.c', '')];
 
   if (workspaceSlug && cloudSyncEnabled) {
     setWorkspaceStatus('Loading shared workspace…', 'saving');
@@ -1122,26 +1336,135 @@ async function initializeWorkspace() {
     try {
       const record = await fetchWorkspace(workspaceSlug);
       if (record) {
-        initialSource = record.source;
+        workspacePrograms = normalizeWorkspacePrograms(record);
+        requestedActiveProgramId = record.active_program_id || null;
         lastWorkspaceUpdate = record.updated_at;
         setWorkspaceStatus('Shared workspace · syncing live', 'saved');
       } else {
         setWorkspaceStatus('New shared workspace · edits save automatically', 'saved');
       }
     } catch (error) {
+      const localWorkspace = loadWorkspaceLocally();
+      workspacePrograms = localWorkspace?.programs || workspacePrograms;
+      requestedActiveProgramId = localWorkspace?.activeProgramId || null;
       setWorkspaceStatus('Could not load shared workspace · check setup or connection', 'error');
       console.error(error);
     }
     codeInput.disabled = false;
   } else if (workspaceSlug) {
-    setWorkspaceStatus('Add Supabase settings to enable shared workspaces', 'error');
+    const localWorkspace = loadWorkspaceLocally();
+    workspacePrograms = localWorkspace?.programs || workspacePrograms;
+    requestedActiveProgramId = localWorkspace?.activeProgramId || null;
+    setWorkspaceStatus('Saved on this device · add Supabase settings for shared sync', 'error');
   }
 
-  codeInput.value = initialSource;
+  activeProgramId = workspacePrograms.find(program => program.id === requestedActiveProgramId && program.kind !== 'folder')?.id
+    || workspacePrograms.find(program => program.kind !== 'folder')?.id || createProgram('main.c', '').id;
+  renderProgramList();
+  const active = workspacePrograms.find(program => program.id === activeProgramId && program.kind !== 'folder') || workspacePrograms.find(program => program.kind !== 'folder');
+  activeProgramTitleEl.textContent = workspacePath(active);
+  codeInput.value = active.source;
+  saveWorkspaceLocally();
   workspaceReady = true;
   refreshEditor({ persist: false });
-  runCode();
+  showEmptyProgram();
   if (workspaceSlug && cloudSyncEnabled) workspacePollTimer = setInterval(pollWorkspace, 3000);
+}
+
+function createProgram(name, source = '', parentId = null) {
+  return { id: globalThis.crypto?.randomUUID?.() || `program-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, kind: 'file', parentId, name, source };
+}
+function createFolder(name, parentId = null) { return { id: globalThis.crypto?.randomUUID?.() || `folder-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, kind: 'folder', parentId, name }; }
+
+function normalizeWorkspacePrograms(record) {
+  if (Array.isArray(record?.programs) && record.programs.length) {
+    const normalized = record.programs.filter(node => node && typeof node.name === 'string')
+      .map(node => node.kind === 'folder'
+        ? { id: String(node.id || createFolder(node.name).id), kind: 'folder', parentId: node.parentId || null, name: node.name.slice(0, 80) }
+        : { id: String(node.id || createProgram(node.name).id), kind: 'file', parentId: node.parentId || null, name: node.name.slice(0, 80), source: typeof node.source === 'string' ? node.source : '' });
+    if (normalized.some(node => node.kind === 'file')) return normalized;
+  }
+  return [createProgram('main.c', typeof record?.source === 'string' ? record.source : '')];
+}
+function workspacePath(file) {
+  const parts = [file.name]; let parent = workspacePrograms.find(n => n.id === file.parentId);
+  while (parent) { parts.unshift(parent.name); parent = workspacePrograms.find(n => n.id === parent.parentId); }
+  return parts.join('/');
+}
+
+function syncActiveProgram() {
+  const active = workspacePrograms.find(program => program.id === activeProgramId && program.kind !== 'folder');
+  if (active) active.source = codeInput.value;
+}
+
+function localWorkspaceKey() { return `cmv-workspace:${workspaceSlug}`; }
+function saveWorkspaceLocally() {
+  if (!workspaceSlug) return;
+  syncActiveProgram();
+  try { localStorage.setItem(localWorkspaceKey(), JSON.stringify({ programs: workspacePrograms, activeProgramId })); } catch (error) { console.warn('Could not save workspace locally', error); }
+}
+function loadWorkspaceLocally() {
+  if (!workspaceSlug) return null;
+  try {
+    const stored = JSON.parse(localStorage.getItem(localWorkspaceKey()) || 'null');
+    const programs = Array.isArray(stored) ? stored : stored?.programs;
+    if (!Array.isArray(programs) || !programs.length) return null;
+    return {
+      programs: normalizeWorkspacePrograms({ programs }),
+      activeProgramId: Array.isArray(stored) ? null : stored.activeProgramId || null
+    };
+  } catch { return null; }
+}
+
+function renderProgramList() {
+  if (!programListEl) return;
+  programListEl.replaceChildren();
+  const renderChildren = (parentId = null, depth = 0) => workspacePrograms.filter(node => (node.parentId || null) === parentId).forEach(node => {
+    const folder = node.kind === 'folder';
+    const item = document.createElement('div'); item.className = `program-item${node.id === activeProgramId ? ' active' : ''}${folder && node.id === selectedFolderId ? ' selected-folder' : ''}`; item.style.setProperty('--depth', depth);
+    const open = document.createElement('button'); open.type = 'button'; open.className = 'program-open'; open.textContent = `${folder ? (expandedFolderIds.has(node.id) ? '▾ 📁 ' : '▸ 📁 ') : '  📄 '}${node.name}`; open.title = node.name;
+    open.addEventListener('click', () => { if (folder) { selectedFolderId = node.id; expandedFolderIds.has(node.id) ? expandedFolderIds.delete(node.id) : expandedFolderIds.add(node.id); renderProgramList(); } else selectProgram(node.id); });
+    const rename = document.createElement('button'); rename.type = 'button'; rename.className = 'program-action'; rename.textContent = '✎'; rename.title = `Rename ${node.name}`;
+    rename.addEventListener('click', () => { const name = window.prompt(folder ? 'Folder name' : 'C file name', node.name); if (name === null) return; const clean = name.trim(); if (!/^[A-Za-z0-9_-][A-Za-z0-9_. -]{0,59}$/.test(clean) || clean.includes('..') || clean.includes('/') || clean.includes('\\')) { setWorkspaceStatus('Use a simple name without slashes or ..', 'error'); return; } node.name = folder ? clean : (/\.(c|h)$/i.test(clean) ? clean : `${clean}.c`); if (node.id === activeProgramId) activeProgramTitleEl.textContent = workspacePath(node); renderProgramList(); invalidateCompilation(); scheduleWorkspaceSave(); });
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'program-action'; remove.textContent = '×'; remove.title = `Delete ${node.name}`;
+    remove.addEventListener('click', () => { const removeIds = new Set([node.id]); let grew = true; while (grew) { grew = false; workspacePrograms.forEach(candidate => { if (removeIds.has(candidate.parentId) && !removeIds.has(candidate.id)) { removeIds.add(candidate.id); grew = true; } }); } if (workspacePrograms.filter(n => n.kind !== 'folder' && !removeIds.has(n.id)).length < 1) { setWorkspaceStatus('A workspace must keep at least one C file', 'error'); return; } if (!window.confirm(`Delete ${folder ? 'folder and its contents' : node.name}?`)) return; const wasActive = removeIds.has(activeProgramId); workspacePrograms = workspacePrograms.filter(candidate => !removeIds.has(candidate.id)); if (wasActive) { const next = workspacePrograms.find(n => n.kind !== 'folder'); activeProgramId = next.id; codeInput.value = next.source; activeProgramTitleEl.textContent = workspacePath(next); refreshEditor({ persist: false }); showEmptyProgram(); } renderProgramList(); invalidateCompilation(); scheduleWorkspaceSave(); });
+    item.append(open, rename, remove); programListEl.append(item);
+    if (folder && expandedFolderIds.has(node.id)) renderChildren(node.id, depth + 1);
+  });
+  renderChildren();
+}
+function selectProgram(id) {
+  if (id === activeProgramId) return;
+  syncActiveProgram(); const active = workspacePrograms.find(node => node.id === id && node.kind !== 'folder'); if (!active) return;
+  activeProgramId = id; activeProgramTitleEl.textContent = workspacePath(active); codeInput.value = active.source;
+  renderProgramList(); refreshEditor({ persist: false }); showEmptyProgram(); invalidateCompilation(); scheduleWorkspaceSave();
+}
+
+function showEmptyProgram() {
+  stopAuto(); snapshots = []; cursor = 0;
+  stepIdxEl.textContent = '0'; stepTotalEl.textContent = '0';
+  stepDescEl.classList.remove('error');
+  stepDescEl.textContent = 'Ready. Use Simulate to inspect supported C memory behavior.'; if (consoleOut) consoleOut.textContent = '';
+  $('#textBody').innerHTML = '<div class="region-note">Compiled instructions live here (read-only).</div>';
+  $('#dataBody').innerHTML = '<div class="empty-note">No initialized globals.</div>';
+  $('#bssBody').innerHTML = '<div class="empty-note">No uninitialized globals.</div>';
+  $('#heapBody').innerHTML = '<div class="empty-note">Heap is empty. Call <code>malloc()</code> to allocate.</div>';
+  $('#stackBody').innerHTML = '<div class="empty-note">No active frames.</div>';
+  arrowLayer.innerHTML = '';
+}
+
+function setProgramsCollapsed(collapsed) {
+  editorWorkspaceEl.classList.toggle('programs-collapsed', collapsed);
+  toggleProgramsBtn.setAttribute('aria-expanded', String(!collapsed));
+  toggleProgramsBtn.title = collapsed ? 'Expand Programs' : 'Collapse Programs';
+  toggleProgramsBtn.textContent = collapsed ? '›' : '‹';
+  try { localStorage.setItem('cmv-programs-collapsed', String(collapsed)); } catch {}
+}
+
+try {
+  setProgramsCollapsed(localStorage.getItem('cmv-programs-collapsed') === 'true');
+} catch {
+  setProgramsCollapsed(false);
 }
 
 /* ---- Editor: line numbers + syntax highlighting overlay ---- */
@@ -1154,7 +1477,7 @@ function refreshEditor({ persist = true } = {}) {
   overlay.scrollTop = codeInput.scrollTop;
   overlay.scrollLeft = codeInput.scrollLeft;
   lineNumbers.scrollTop = codeInput.scrollTop;
-  if (persist) scheduleWorkspaceSave();
+  if (persist) { invalidateCompilation(); scheduleWorkspaceSave(); }
 }
 function escapeHtml(s) { return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function highlightC(src) {
@@ -1275,12 +1598,17 @@ codeInput.addEventListener('keydown', e => {
     const start = codeInput.selectionStart;
     const end = codeInput.selectionEnd;
     const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    const lineEndIndex = value.indexOf('\n', start);
+    const lineEnd = lineEndIndex < 0 ? value.length : lineEndIndex;
+    const currentLine = value.slice(lineStart, lineEnd);
     const linePrefix = value.slice(lineStart, start);
-    const indent = linePrefix.match(/^\s*/)[0];
-    const after = value.slice(end);
-    const opensBlock = /[({\[]\s*$/.test(linePrefix);
-    const closesBlockNext = /^\s*[)}\]]/.test(after);
-    const nextIndent = closesBlockNext && !opensBlock ? indent.slice(0, Math.max(0, indent.length - 4))
+    const indent = currentLine.match(/^[\t ]*/)[0];
+    const suffixOnLine = value.slice(end, lineEnd);
+    const opensBlock = /\{[\t ]*$/.test(linePrefix);
+    const closesBlockNext = /^[\t ]*\}/.test(suffixOnLine);
+    const onWhitespaceOnlyLine = linePrefix.trim() === '';
+    const nextIndent = onWhitespaceOnlyLine && closesBlockNext
+      ? (indent.endsWith('\t') ? indent.slice(0, -1) : indent.slice(0, Math.max(0, indent.length - 4)))
       : opensBlock ? `${indent}    ` : indent;
     const insert = opensBlock && closesBlockNext
       ? `\n${nextIndent}\n${indent}`
@@ -1366,10 +1694,14 @@ codeInput.addEventListener('keydown', e => {
 /* ---- Run button: parse + simulate ---- */
 function runCode() {
   stopAuto();
+  if (!compilationId || compiledFingerprint !== workspaceFingerprint()) { invalidateCompilation(); printTerminal('Compile the current workspace successfully before starting simulation.', 'terminal-error'); return; }
   const src = codeInput.value;
+  if (!src.trim()) { showEmptyProgram(); return; }
   try {
     const tokens = tokenize(src);
     const program = new Parser(tokens).parseProgram();
+    validateProgram(program);
+    stepDescEl.classList.remove('error');
     const sim = new Simulator(program);
     sim.run();
     snapshots = sim.snapshots;
@@ -1377,9 +1709,12 @@ function runCode() {
     stepTotalEl.textContent = String(snapshots.length);
     renderSnapshot(0);
   } catch (err) {
+    const label = err.name === 'SyntaxError' ? 'Syntax error' : 'Program error';
+    const message = formatSourceError(err, src);
+    stepDescEl.classList.add('error');
     snapshots = [{
-      desc: 'Parse error: ' + (err.message || err),
-      console: '', data: [], bss: [], heap: [], stack: [], text: [],
+      desc: `<strong>${label}</strong><br>${escapeHtml(message)}`,
+      console: `${label}: ${message}`, data: [], bss: [], heap: [], stack: [], text: [],
     }];
     cursor = 0;
     stepTotalEl.textContent = '1';
@@ -1394,7 +1729,7 @@ function renderSnapshot(i) {
   const s = snapshots[i];
   stepIdxEl.textContent = String(i + 1);
   stepDescEl.innerHTML = s.desc;
-  consoleOut.textContent = s.console || '';
+  if (consoleOut) consoleOut.textContent = s.console || '';
 
   // TEXT region — list functions
   const textBody = $('#textBody');
@@ -1551,7 +1886,7 @@ $('#resetBtn').addEventListener('click', () => {
   snapshots = []; cursor = 0;
   stepIdxEl.textContent = '0'; stepTotalEl.textContent = '0';
   stepDescEl.innerHTML = 'Idle. Click <em>Run</em> to begin.';
-  consoleOut.textContent = '';
+  if (consoleOut) consoleOut.textContent = '';
   $('#textBody').innerHTML = '<div class="region-note">Compiled instructions live here (read-only).</div>';
   $('#dataBody').innerHTML = '<div class="empty-note">No initialized globals.</div>';
   $('#bssBody').innerHTML  = '<div class="empty-note">No uninitialized globals.</div>';
@@ -1576,12 +1911,78 @@ function stopAuto() {
 }
 
 /* ---- Sample loader ---- */
-$('#loadSampleBtn').addEventListener('click', () => {
-  const key = sampleSelect.value;
-  codeInput.value = SAMPLES[key] || SAMPLES.basic;
-  refreshEditor();
-  runCode();
+$('#loadSampleBtn').addEventListener('click', () => { const key = sampleSelect.value; codeInput.value = SAMPLES[key] || SAMPLES.basic; refreshEditor(); showEmptyProgram(); });
+$('#newProgramBtn').addEventListener('click', () => {
+  syncActiveProgram();
+  let nextNumber = workspacePrograms.filter(n => n.kind !== 'folder').length + 1;
+  while (workspacePrograms.some(program => program.name === `program-${nextNumber}.c`)) nextNumber++;
+  const program = createProgram(`program-${nextNumber}.c`, '', selectedFolderId);
+  workspacePrograms.push(program);
+  activeProgramId = program.id;
+  activeProgramTitleEl.textContent = workspacePath(program);
+  codeInput.value = '';
+  renderProgramList(); refreshEditor({ persist: false }); showEmptyProgram(); invalidateCompilation();
+  scheduleWorkspaceSave(); codeInput.focus();
 });
+toggleProgramsBtn.addEventListener('click', () => {
+  setProgramsCollapsed(!editorWorkspaceEl.classList.contains('programs-collapsed'));
+});
+
+
+function invalidateCompilation() { compilationId = null; compiledFingerprint = ''; const button = $('#nativeRunBtn'); if (button) button.disabled = true; }
+function workspaceFingerprint() { syncActiveProgram(); return JSON.stringify(workspacePrograms.filter(n => n.kind !== 'folder').map(f => [workspacePath(f), f.source])); }
+function printTerminal(text, className = '') { const line = document.createElement('span'); if (className) line.className = className; line.textContent = String(text); terminalOutput.append(line, document.createTextNode('\n')); terminalOutput.scrollTop = terminalOutput.scrollHeight; }
+async function compileWorkspaceFromUi() {
+  printTerminal('$ compile'); $('#terminalStatus').textContent = 'Compiling…'; invalidateCompilation();
+  try {
+    const response = await fetch('/api/compile', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ files: workspacePrograms.filter(n => n.kind !== 'folder').map(f => ({ path: workspacePath(f), source: f.source || '' })) }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Compiler service returned ${response.status}`);
+    if (!result.success) { printTerminal(result.diagnostics || 'Compilation failed.', 'terminal-error'); $('#terminalStatus').textContent = 'Build failed'; return false; }
+    compilationId = result.compilationId; compiledFingerprint = workspaceFingerprint(); $('#nativeRunBtn').disabled = false; $('#terminalStatus').textContent = 'Build succeeded';
+    printTerminal('Build succeeded. Run is ready.', 'terminal-success'); if (result.diagnostics) printTerminal(result.diagnostics, 'terminal-warning'); return true;
+  } catch (error) {
+    const unavailable = error instanceof TypeError || /Unexpected token|JSON/i.test(error.message);
+    const message = unavailable ? 'Native compiler unavailable here. Start the local app with `npm run dev` (GitHub Pages cannot compile C).' : error.message;
+    printTerminal(message, 'terminal-error'); $('#terminalStatus').textContent = 'Build unavailable'; setWorkspaceStatus(message, 'error'); return false;
+  }
+}
+async function runCompiledFromUi(stdin = '') {
+  if (!compilationId || compiledFingerprint !== workspaceFingerprint()) { invalidateCompilation(); printTerminal('Compile the current workspace successfully before running.', 'terminal-error'); return; }
+  printTerminal('$ run'); $('#terminalStatus').textContent = 'Running…';
+  try {
+    const response = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ compilationId, stdin }) });
+    const result = await response.json(); if (!response.ok) throw new Error(result.error || `Runner returned ${response.status}`);
+    if (result.stdout) printTerminal(result.stdout.replace(/\n$/, ''));
+    if (result.stderr) printTerminal(result.stderr, 'terminal-warning');
+    if (result.message) printTerminal(result.message, 'terminal-warning');
+    printTerminal(`Process exited with code ${result.exitCode}`, result.exitCode === 0 ? 'terminal-success' : 'terminal-error'); $('#terminalStatus').textContent = `Exited ${result.exitCode}`;
+  } catch (error) { printTerminal(error.message, 'terminal-error'); $('#terminalStatus').textContent = 'Run failed'; }
+}
+$('#compileBtn').addEventListener('click', compileWorkspaceFromUi);
+$('#nativeRunBtn').addEventListener('click', () => runCompiledFromUi());
+$('#visualizeBtn').addEventListener('click', runCode);
+$('#terminalForm').addEventListener('submit', async event => {
+  event.preventDefault(); const command = $('#terminalInput').value.trim(); if (!command) return;
+  $('#terminalInput').value = ''; printTerminal(`$ ${command}`); $('#terminalStatus').textContent = 'Working…';
+  if (command === 'clear') { terminalOutput.textContent = ''; return; }
+  if (command === 'help') { printTerminal('Use real build/run commands: gcc main.c -o main, then ./main. Supported compiler flags: -std=c11, -std=c17, -Wall, -Wextra, -pedantic, -O0/-O1/-O2, -g, -lm. One command per line; no shell scripts or operators.'); return; }
+  try {
+    const response = await fetch('/api/terminal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, files: workspacePrograms.filter(n => n.kind !== 'folder').map(f => ({ path: workspacePath(f), source: f.source || '' })), compilationId }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || `Terminal returned ${response.status}`);
+    if (result.success === false) { printTerminal(result.diagnostics || 'Compilation failed.', 'terminal-error'); $('#terminalStatus').textContent = 'Build failed'; invalidateCompilation(); return; }
+    if (result.compilationId) { compilationId = result.compilationId; compiledFingerprint = workspaceFingerprint(); $('#nativeRunBtn').disabled = false; $('#terminalStatus').textContent = 'Build succeeded'; printTerminal(`Build succeeded: ${result.command}`, 'terminal-success'); }
+    if (result.stdout) printTerminal(result.stdout.replace(/\n$/, ''));
+    if (result.stderr) printTerminal(result.stderr, 'terminal-warning');
+    if (result.message) printTerminal(result.message, 'terminal-warning');
+    if (Number.isInteger(result.exitCode)) { printTerminal(`Process exited with code ${result.exitCode}`, result.exitCode === 0 ? 'terminal-success' : 'terminal-error'); $('#terminalStatus').textContent = `Exited ${result.exitCode}`; }
+  } catch (error) { printTerminal(error.message, 'terminal-error'); $('#terminalStatus').textContent = 'Command failed'; }
+});
+$('#clearTerminalBtn').addEventListener('click', () => { terminalOutput.textContent = ''; });
+$('#newFolderBtn').addEventListener('click', () => { const name = window.prompt('Folder name'); if (!name) return; const clean = name.trim(); if (!/^[A-Za-z0-9_-][A-Za-z0-9_. -]{0,59}$/.test(clean) || clean.includes('..') || clean.includes('/') || clean.includes('\\')) { setWorkspaceStatus('Use a simple folder name without slashes or ..', 'error'); return; } const folder = createFolder(clean, selectedFolderId); workspacePrograms.push(folder); selectedFolderId = folder.id; expandedFolderIds.add(folder.id); renderProgramList(); invalidateCompilation(); scheduleWorkspaceSave(); });
+$('#toggleMemoryBtn').addEventListener('click', () => { const collapsed = document.querySelector('.memory-panel').classList.toggle('memory-collapsed'); const button = $('#toggleMemoryBtn'); button.setAttribute('aria-expanded', String(!collapsed)); button.textContent = collapsed ? 'Expand memory map' : 'Collapse memory map'; try { localStorage.setItem('cmv-memory-collapsed', String(collapsed)); } catch {} });
+try { if (localStorage.getItem('cmv-memory-collapsed') !== 'false') { document.querySelector('.memory-panel').classList.add('memory-collapsed'); $('#toggleMemoryBtn').setAttribute('aria-expanded', 'false'); $('#toggleMemoryBtn').textContent = 'Expand memory map'; } } catch { document.querySelector('.memory-panel').classList.add('memory-collapsed'); $('#toggleMemoryBtn').setAttribute('aria-expanded', 'false'); $('#toggleMemoryBtn').textContent = 'Expand memory map'; }
 
 /* ---- Re-draw arrows on resize ---- */
 window.addEventListener('resize', () => {

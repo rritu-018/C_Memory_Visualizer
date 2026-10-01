@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="app-base-path" content="/C_Memory_Visualizer/" />
   <title>C Memory Visualizer — See Your Code Allocate Memory</title>
-  <link rel="stylesheet" href="assets/css/styles.css?v=slug-workspaces-1" />
+  <link rel="stylesheet" href="assets/css/styles.css?v=workspace-ide-1" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
@@ -21,14 +21,14 @@
               <stop offset="1" stop-color="#a78bfa"/>
             </linearGradient>
           </defs>
-          <rect x="2" y="3" width="20" height="6" rx="1.5" fill="url(#g1)" opacity=".9"/>
-          <rect x="2" y="10.5" width="20" height="4" rx="1" fill="url(#g1)" opacity=".55"/>
-          <rect x="2" y="15.5" width="20" height="6" rx="1.5" fill="url(#g1)" opacity=".75"/>
+          <path d="M19.8 5.1a10 10 0 1 0 0 13.8l-3.1-2.4a6 6 0 1 1 0-9l3.1-2.4Z" fill="url(#g1)"/>
         </svg>
       </div>
       <div>
         <h1>C Memory Visualizer</h1>
-        <p class="tagline">Type C code. Watch the stack, heap, and data segments come alive. <span id="workspaceName"></span> <span id="workspaceStatus" role="status" aria-live="polite"></span></p>
+        <p class="tagline">Type C code. Watch the stack, heap, and data segments come alive.</p>
+        <p class="workspace-line" id="workspaceName"></p>
+        <p class="workspace-line workspace-status" id="workspaceStatus" role="status" aria-live="polite"></p>
       </div>
     </div>
     <div class="top-actions">
@@ -51,9 +51,14 @@
   <main class="layout">
     <!-- LEFT: Editor + Controls -->
     <section class="panel editor-panel">
+      <div class="editor-workspace">
+        <aside class="program-sidebar" aria-label="Workspace programs">
+          <div class="program-sidebar-head"><button id="toggleProgramsBtn" class="sidebar-toggle" type="button" aria-expanded="true" aria-controls="programList" title="Collapse Explorer">‹</button><h2>Explorer</h2><button id="newFolderBtn" class="btn ghost" type="button" title="Create folder">📁</button><button id="newProgramBtn" class="btn ghost" type="button" title="Create a new C file">＋</button></div>
+          <div id="programList" class="program-list"></div>
+        </aside>
+        <div class="editor-main">
       <div class="panel-head">
-        <h2>main.c</h2>
-        <span class="hint" title="Supported: int, char, float, double, long, arrays, pointers, structs, malloc/calloc/free, functions">Enter auto-indents · Tab indents · brackets pair</span>
+        <h2 id="activeProgramTitle">main.c</h2>
       </div>
 
       <div class="editor-wrap">
@@ -62,26 +67,11 @@
         <pre class="syntax-overlay" id="syntaxOverlay" aria-hidden="true"></pre>
       </div>
 
-      <div class="controls">
-        <button id="runBtn" class="btn primary">▶ Run</button>
-        <button id="stepBackBtn" class="btn" title="Step backward">⏮ Back</button>
-        <button id="stepFwdBtn" class="btn" title="Step forward">Step ⏭</button>
-        <button id="playBtn" class="btn">Auto ▷</button>
-        <button id="resetBtn" class="btn ghost">Reset</button>
-        <div class="speed">
-          <label for="speed">Speed</label>
-          <input id="speed" type="range" min="200" max="1500" step="100" value="700" />
+      <div class="controls"><button id="compileBtn" class="btn primary">⚙ Compile</button><button id="nativeRunBtn" class="btn" disabled>▶ Run</button><button id="visualizeBtn" class="btn ghost">▣ Visualize</button></div>
+
+
+
         </div>
-      </div>
-
-      <div class="status-bar">
-        <div>Step: <strong id="stepIdx">0</strong> / <span id="stepTotal">0</span></div>
-        <div id="stepDescription" class="step-desc">Idle. Click <em>Run</em> to begin.</div>
-      </div>
-
-      <div class="console" id="console" aria-live="polite">
-        <div class="console-head">stdout</div>
-        <pre id="consoleOut"></pre>
       </div>
     </section>
 
@@ -90,12 +80,17 @@
       <div class="memory-head">
         <h2>Process Memory Layout</h2>
         <div class="legend">
-          <span><i class="dot text"></i> Text</span>
-          <span><i class="dot data"></i> Data</span>
-          <span><i class="dot bss"></i> BSS</span>
-          <span><i class="dot heap"></i> Heap</span>
           <span><i class="dot stack"></i> Stack</span>
+          <span><i class="dot heap"></i> Heap</span>
+          <span><i class="dot bss"></i> BSS</span>
+          <span><i class="dot data"></i> Data</span>
+          <span><i class="dot text"></i> Text</span>
         </div>
+      </div>
+
+      <div class="memory-controls"><div class="controls"><button id="runBtn" class="btn primary">▶ Simulate</button><button id="stepBackBtn" class="btn" title="Step backward">⏮ Back</button><button id="stepFwdBtn" class="btn" title="Step forward">Step ⏭</button><button id="playBtn" class="btn">Auto ▷</button><button id="resetBtn" class="btn ghost">Reset</button><div class="speed"><label for="speed">Speed</label><input id="speed" type="range" min="200" max="1500" step="100" value="700" /></div></div><div class="status-bar"><div>Step: <strong id="stepIdx">0</strong> / <span id="stepTotal">0</span></div><div id="stepDescription" class="step-desc">Idle. Click Simulate to begin.</div></div></div><button id="toggleMemoryBtn" class="memory-collapse btn ghost" type="button" aria-expanded="true" aria-controls="memoryMapContent">Collapse memory map</button><div id="memoryMapContent">
+      <div class="address-axis" aria-label="Memory regions are shown from higher to lower addresses">
+        <span>HIGHER ADDRESSES</span><i></i><span>LOWER ADDRESSES</span>
       </div>
 
       <div class="memory-grid">
@@ -138,6 +133,12 @@
           </div>
         </div>
 
+        <div class="memory-gap" aria-label="Memory mapped regions">
+          <span class="gap-mark"></span>
+          <div><strong>Memory-mapped region</strong><small>Shared libraries · mapped files · address space</small></div>
+          <span class="gap-mark"></span>
+        </div>
+
         <div class="region region-stack" id="region-stack">
           <div class="region-label">
             <span class="badge stack">STACK</span>
@@ -151,17 +152,20 @@
       </div>
 
       <svg class="arrow-layer" id="arrowLayer" aria-hidden="true"></svg>
+      </div>
     </section>
+    <section class="panel terminal-panel" aria-label="Build and run terminal"><div class="terminal-title"><h2>Output Terminal</h2><span id="terminalStatus">Native GCC · local workspace</span><button id="clearTerminalBtn" class="btn ghost" type="button">Clear</button></div><pre id="terminalOutput" class="terminal-output" role="log" aria-live="polite">C Memory Visualizer terminal
+Example: gcc main.c -o main
+Then run: ./main</pre><form id="terminalForm" class="terminal-form"><label for="terminalInput">$</label><input id="terminalInput" autocomplete="off" spellcheck="false" placeholder="help" aria-label="Terminal command" /><button class="btn" type="submit">Enter</button></form></section>
   </main>
 
   <footer class="footer">
     <p>
-      <strong>How it works:</strong> A simplified C interpreter parses your code, simulates execution, and snapshots
-      memory at each step. Addresses are illustrative (typical x86-64 layout). Not all of C is supported — keep it simple!
+      <strong>How it works:</strong> Compile and run native C with GCC in the local workspace terminal. The optional memory visualizer simulates a supported subset of C with illustrative addresses.
     </p>
   </footer>
 
-  <script src="assets/js/backend-config.js?v=slug-workspaces-1"></script>
-  <script src="assets/js/app.js?v=slug-workspaces-1"></script>
+  <script src="assets/js/backend-config.js?v=editor-output-3"></script>
+  <script src="assets/js/app.js?v=workspace-ide-2"></script>
 </body>
 </html>

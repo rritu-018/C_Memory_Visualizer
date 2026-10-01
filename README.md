@@ -35,9 +35,9 @@ Then open <http://localhost:4173>. Enter a workspace name and choose **Go**; the
 
 ### Enable shared workspaces
 
-The app uses Supabase's browser REST API for cross-device shared code. Create a Supabase project, run [`database/supabase-workspaces.sql`](database/supabase-workspaces.sql) in its SQL Editor, then copy [`assets/js/backend-config.example.js`](assets/js/backend-config.example.js) to `assets/js/backend-config.js` and fill in the project URL and **publishable** key. Never put a secret or service-role key in browser code. The publishable key is public by design; database access is controlled by the included row-level security policies.
+The app uses Supabase's browser REST API for cross-device shared code. Create a Supabase project, run [`database/supabase-workspaces.sql`](database/supabase-workspaces.sql) in its SQL Editor (rerun it on an existing project to add multi-program storage), then copy [`assets/js/backend-config.example.js`](assets/js/backend-config.example.js) to `assets/js/backend-config.js` and fill in the project URL and **publishable** key. Never put a secret or service-role key in browser code. The publishable key is public by design; database access is controlled by the included row-level security policies.
 
-Deploy the updated repository to GitHub Pages after configuring the key. Slugs are public shared workspaces: anyone who knows a slug can read and edit its C source. This version syncs the source buffer, not accounts or private workspaces.
+Deploy the updated repository to GitHub Pages after configuring the key. Slugs are public shared workspaces: anyone who knows a slug can read and edit its saved C programs. This version does not provide accounts or private workspaces.
 
 ### Use the live version
 
@@ -68,10 +68,9 @@ You'll see `x` land on the **Stack**, `p` get drawn pointing to it with an arrow
 
 ```
 c-memory-visualizer/
-├── index.html      # Root workspace-name form
+├── index.html      # Landing page with integrated workspace entry form
 ├── 404.html        # GitHub Pages fallback for /<slug> routes
 ├── visualizer.html # Interactive editor + memory regions
-├── landing.html    # Original marketing landing page
 ├── assets/
 │   ├── css/
 │   │   └── styles.css # Shared visualizer theme and responsive layout
@@ -86,7 +85,7 @@ c-memory-visualizer/
 └── LICENSE
 ```
 
-GitHub Pages serves `404.html` for unknown `/<slug>` paths, allowing the visualizer to retain the requested workspace URL. `landing.html` preserves the previous marketing page.
+The landing page at the project root lets you enter a workspace name and then opens that shared workspace. GitHub Pages serves `404.html` for unknown `/<slug>` paths, allowing the visualizer to retain the requested workspace URL.
 
 See [the architecture guide](docs/architecture.md) for a suggested path from this static prototype to a multi-user app.
 
@@ -94,10 +93,16 @@ See [the architecture guide](docs/architecture.md) for a suggested path from thi
 
 ## ⚠️ Limitations
 
-This is an educational visualizer, **not a real C compiler**. It approximates how memory works conceptually — it doesn't enforce undefined behaviour, doesn't link against libc, and supports a deliberately small subset of C. Use it for intuition, not for production debugging.
+The memory map is an educational simulation: addresses are illustrative, and the visualizer supports a deliberately small subset of C. Native compilation and execution are available through the local GCC workspace described below.
 
 ---
 
 ## 📜 License
 
 MIT — see [LICENSE](./LICENSE).
+
+## Native C workspace
+
+Run `npm run dev` and open the local URL to use native GCC compilation and execution. The local server exposes a loopback-only API; GCC compiles all `.c` files in the workspace together and includes workspace headers. Use **Compile** before **Run**, or enter standard commands such as `gcc main.c -o main` followed by `./main` in the Output Terminal. Compiler diagnostics, program output, stderr, and exit codes appear there. Terminal `run [text]` supplies standard input.
+
+The local execution service requires GCC and Bubblewrap (`bwrap`). It applies CPU, memory, process, file-size, output-size, and time limits and runs each build in an isolated temporary filesystem. Static hosting such as GitHub Pages cannot execute native C; the editor and memory simulator still load there, but compile/run require the local server. The collapsible memory map remains a simplified visualization for the supported C subset; normal native compile/run supports GCC's C11 implementation.
